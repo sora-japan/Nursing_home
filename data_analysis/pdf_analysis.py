@@ -55,7 +55,7 @@ def norm(s):
         return None # セルが空(None)の場合はそのまま返す
     s = s.replace("\n", "") # セル内の改行を削除
     s = unicodedata.normalize("NFKC", s) # 全角英数字を半角にするなど、文字の企画を統一する
-    s = re.sub(r"\s+", "", s) # スペースやタブなどの空白文字を削除
+    s = re.sub(r"s+", "", s) # スペースやタブなどの空白文字を削除
     return s or None # 綺麗にした結果何も残らなかったらnoneを返す
 
 rows = []
@@ -197,4 +197,76 @@ def add_derived_columns(df):
     df["source_date"] = SOURCE_DATE
     return df
 
+def report(df):
+    """パース結果の検証。想定と違えば理由が分かる形で出力する。"""
+    print("\n" + "=" * 56)
+    print("パース結果の検証")
+    print("=" * 56)
 
+    total = len(df)
+    cap_sum = int(df["capacity_num"].sum())
+    ok_total = total == EXPECTED_TOTAL
+    ok_cap = cap_sum == EXPECTED_CAPACITY
+
+    print(f"\n件数     : {total:>6}  (期待 {EXPECTED_TOTAL})  {'OK' if ok_total else 'NG'}")
+    print(f"定員合計 : {cap_sum:>6}  (期待 {EXPECTED_CAPACITY})  {'OK' if ok_cap else 'NG'}")
+
+    n_tok = int(df["is_jusho_chi_tokurei"].sum())
+    print(f"\n住所地特例  対象: {n_tok}件 / 対象外(地域密着型): {total - n_tok}件")
+    for _, r in df[~df["is_jusho_chi_tokurei"]].iterrows():
+        print(f"    - {r['name']} ({r['ward']})")
+
+    n_dup_no = int(df["no"].duplicated(keep=False).sum())
+    note = "（表①と表②の No.1。想定どおり）" if n_dup_no == 2 else "（要確認）"
+    print(f"\nNo の重複: {n_dup_no}件  {note}")
+
+    print("\n[定員]")
+    print(f"  欠損 {int(df['capacity_num'].isna().sum())}件 /"
+          f" ゼロ {int((df['capacity_num'] == 0).sum())}件")
+    print(f"  範囲 {int(df['capacity_num'].min())} 〜 {int(df['capacity_num'].max())}")
+
+    for col, label in [("facility_type", "施設類型"), ("ward", "区"),
+                       ("entry_requirement", "入居時の要件"),
+                       ("tenure_type", "居住の権利形態")]:
+        print(f"\n[{label}]")
+        print(df[col].value_counts().to_string())
+
+    # 住宅型は特定施設の指定がないため provider_no が空になるのが正常
+    pn = df["provider_no"]
+    n_jutaku = int(df["facility_type"].fillna("").str.contains("住宅型").sum())
+    print("\n[事業者番号]")
+    print(f"  欠損 {int(pn.isna().sum())}件  (住宅型 {n_jutaku}件と一致すれば整合)")
+    print(f"  重複 {int(pn.dropna().duplicated().sum())}件")
+
+    print("\n[施設名の重複]")
+    dup_name = df[df["name"].duplicated(keep=False)]["name"]
+    print(dup_name.value_counts().to_string() if len(dup_name) else "  なし")
+
+    print("\n[列ごとの欠損数]")
+    print(df.isna().sum().to_string())
+
+    return ok_total and ok_cap
+
+
+def main():
+    rows = extract_rows(PDF_PATH)
+    print(f"全行数（ヘッダー含む）: {len(rows)}")
+
+    df = to_dataframe(rows)
+    print(f"データ行数            : {len(df)}")
+
+    df = add_derived_columns(df)
+    df.to_csv(OUT_PATH, index=False, encoding="utf-8")
+    print(f"出力                  : {OUT_PATH}  shape={df.shape}")
+
+    passed = report(df)
+
+    print("\n" + "=" * 56)
+    print("検証OK。パース完了。" if passed
+          else "検証NG。件数または定員合計が想定と一致しません。")
+    if not passed:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
